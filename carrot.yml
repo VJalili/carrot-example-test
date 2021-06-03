@@ -1,0 +1,73 @@
+# This is a basic workflow to help you get started with Actions
+
+name: 'Carrot Test'
+
+# description: 'Action for triggering runs of tests defined in the Broad CARROT Application with PR Comments'
+
+# Controls when the action will run. 
+on:
+  issue_comment:
+    types: [created]
+  # Triggers the workflow on push or pull request events but only for the main branch
+  #push:
+  #  branches: [ main ]
+  #pull_request:
+  #  branches: [ main ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  #workflow_dispatch:
+
+inputs:
+    software-name:
+        description: "The name of the software in this repository, as it is written in the software record for this repository in the CARROT database"
+        required: true
+        default: "carrot_integration_test"
+    github-token:
+        description: "The GitHub token for using the GitHub API.  Generated automatically for the Actions workflow."
+        required: true
+    topic-name:
+        description: "The Google Cloud PubSub topic name for the topic we will publish the message to to start the test"
+        required: true
+    #sa-key:
+    #    description: 'The Service Account key JSON for the service account that has publish permissions for the PubSub topic'
+    minimum-permissions:
+        description: 'The minimum permissions level required of a user to be able to trigger a CARROT test run from a comment.  Can be "admin", "write", or "read" (not recommended)'
+        default: 'write'
+
+runs:
+  using: "node12"
+  main: "dist/index.js"
+
+
+jobs:
+  publish-test:
+    runs-on: ubuntu-18.04
+    steps:
+      - name: Parse comment
+        uses: broadinstitute/carrot-publish-github-action@v0.3.0-beta
+        with:
+          software-name: carrot_integration_test
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          topic-name: ${{ secrets.CARROT_TOPIC_NAME }}
+          sa-key: ${{ secrets.CARROT_SA_KEY }}
+          minimum-permissions: write
+      
+  # This workflow contains a single job called "build"
+#  build:
+    # The type of runner that the job will run on
+#    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+#    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+#      - uses: actions/checkout@v2
+
+      # Runs a single command using the runners shell
+#      - name: Run a one-line script
+#        run: echo Hello, world!
+
+      # Runs a set of commands using the runners shell
+#      - name: Run a multi-line script
+#        run: |
+#          echo Add other actions to build,
+#          echo test, and deploy your project.
