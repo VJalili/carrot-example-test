@@ -16,3 +16,6 @@ The `carrot-test-config` directory contains a file called `carrot_commands.txt` 
 First, ensure you have access to a running [CARROT](https://github.com/broadinstitute/carrot) server with software building functionality and reporting functionality configured, and that you have downloaded and installed the [CARROT CLI](https://github.com/broadinstitute/carrot_cli) and configured it to point to that server.
 
 Then, download the contents of carrot-test-config and run the commands in the `carrot_commands.txt` file using CARROT CLI, following the instructions in the comments.  Make sure you are using the version of this repository that is compatible with the version of CARROT that you are running.  The branch names and release names in this repository match version numbers for releases of CARROT.  If there is not a release or branch of this repository that matches the version of CARROT you are using, use Price is Right rules to determine which version to use: pick the branch of this repository with a version number that is closest to your CARROT version without exceeding it.
+
+
+test
