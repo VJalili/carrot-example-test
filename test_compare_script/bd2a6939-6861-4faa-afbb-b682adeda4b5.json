@@ -1,0 +1,1171 @@
+{
+  "workflowName": "Module0506ComplexResolve",
+  "workflowProcessingEvents": [
+    {
+      "cromwellId": "cromid-550be2e",
+      "description": "PickedUp",
+      "timestamp": "2021-08-09T18:18:39.541Z",
+      "cromwellVersion": "59-a6bef7a"
+    },
+    {
+      "cromwellId": "cromid-550be2e",
+      "description": "Finished",
+      "timestamp": "2021-08-09T18:52:31.906Z",
+      "cromwellVersion": "59-a6bef7a"
+    }
+  ],
+  "metadataSource": "Unarchived",
+  "actualWorkflowLanguageVersion": "1.0",
+  "submittedFiles": {
+    "workflow": "version 1.0\n\nimport \"BreakpointOverlapFilterWorkflow.wdl\" as BreakpointOverlapFilter\nimport \"ResolveCpxSv.wdl\" as ResolveComplexContig\nimport \"Tasks0506.wdl\" as MiniTasks\n\nworkflow Module0506ComplexResolve {\n  input {\n    String cohort_name\n\n    Boolean merge_vcfs = false\n\n    Array[File] cluster_vcfs\n    Array[File] cluster_bothside_pass_lists\n    Array[File] cluster_background_fail_lists\n\n    Array[File] disc_files\n    Array[File] rf_cutoff_files\n\n    File contig_list\n    Int max_shard_size\n    File cytobands\n    File mei_bed\n    File pe_exclude_list\n    File ref_dict\n\n    String sv_base_mini_docker\n    String sv_pipeline_docker\n\n    # overrides for local tasks\n    RuntimeAttr? runtime_override_update_sr_list_pass\n    RuntimeAttr? runtime_override_update_sr_list_fail\n    RuntimeAttr? runtime_override_integrate_resolved_vcfs\n    RuntimeAttr? runtime_override_rename_variants\n\n    RuntimeAttr? runtime_override_breakpoint_overlap_filter\n\n    # overrides for mini tasks\n    RuntimeAttr? runtime_override_subset_inversions\n    RuntimeAttr? runtime_override_concat\n\n    # overrides for ResolveComplexContig\n    RuntimeAttr? runtime_override_get_se_cutoff\n    RuntimeAttr? runtime_override_shard_vcf_cpx\n    RuntimeAttr? runtime_override_shard_vids\n    RuntimeAttr? runtime_override_resolve_prep\n    RuntimeAttr? runtime_override_resolve_cpx_per_shard\n    RuntimeAttr? runtime_override_restore_unresolved_cnv_per_shard\n    RuntimeAttr? runtime_override_concat_resolved_per_shard\n    RuntimeAttr? runtime_override_merge_resolve_inner\n\n    RuntimeAttr? runtime_override_get_se_cutoff_inv\n    RuntimeAttr? runtime_override_shard_vcf_cpx_inv\n    RuntimeAttr? runtime_override_shard_vids_inv\n    RuntimeAttr? runtime_override_resolve_prep_inv\n    RuntimeAttr? runtime_override_resolve_cpx_per_shard_inv\n    RuntimeAttr? runtime_override_restore_unresolved_cnv_per_shard_inv\n    RuntimeAttr? runtime_override_concat_resolved_per_shard_inv\n    RuntimeAttr? runtime_override_merge_resolve_inner_inv\n  }\n\n  #Scatter per chromosome\n  Array[String] contigs = transpose(read_tsv(contig_list))[0]\n  scatter ( i in range(length(contigs)) ) {\n\n    String contig = contigs[i]\n\n    #Subset inversions from PESR+RD VCF\n    call MiniTasks.FilterVcf as SubsetInversions {\n      input:\n        vcf=cluster_vcfs[i],\n        vcf_index=cluster_vcfs[i] + \".tbi\",\n        outfile_prefix=\"~{cohort_name}.~{contig}.inversions_only\",\n        records_filter='INFO/SVTYPE=\"INV\"',\n        sv_base_mini_docker=sv_base_mini_docker,\n        runtime_attr_override=runtime_override_subset_inversions\n    }\n\n    #Resolve inversion-only VCF\n    call ResolveComplexContig.ResolveComplexSv as ResolveCpxInv {\n      input:\n        vcf=SubsetInversions.filtered_vcf,\n        prefix=\"~{cohort_name}.~{contig}.inv_only\",\n        contig=contig,\n        max_shard_size=max_shard_size,\n        cytobands=cytobands,\n        disc_files=disc_files,\n        mei_bed=mei_bed,\n        pe_exclude_list=pe_exclude_list,\n        rf_cutoff_files=rf_cutoff_files,\n        inv_only=true,\n        ref_dict=ref_dict,\n        precluster_distance=50000000,\n        precluster_overlap_frac=0.1,\n        sv_pipeline_docker=sv_pipeline_docker,\n        sv_base_mini_docker=sv_base_mini_docker,\n        runtime_override_get_se_cutoff=runtime_override_get_se_cutoff_inv,\n        runtime_override_shard_vcf_cpx=runtime_override_shard_vcf_cpx_inv,\n        runtime_override_shard_vids=runtime_override_shard_vids_inv,\n        runtime_override_resolve_prep=runtime_override_resolve_prep_inv,\n        runtime_override_resolve_cpx_per_shard=runtime_override_resolve_cpx_per_shard_inv,\n        runtime_override_restore_unresolved_cnv_per_shard=runtime_override_restore_unresolved_cnv_per_shard_inv,\n        runtime_override_concat_resolved_per_shard=runtime_override_concat_resolved_per_shard_inv,\n        runtime_override_merge_resolve_inner=runtime_override_merge_resolve_inner_inv\n    }\n\n    #Run same-bp overlap filter on full vcf\n    call BreakpointOverlap {\n      input:\n        vcf=cluster_vcfs[i],\n        vcf_index=cluster_vcfs[i] + \".tbi\",\n        prefix=\"~{cohort_name}.~{contig}.breakpoint_overlap\",\n        bothside_pass_list=cluster_bothside_pass_lists[i],\n        background_fail_list=cluster_background_fail_lists[i],\n        sv_pipeline_docker=sv_pipeline_docker,\n        runtime_attr_override=runtime_override_breakpoint_overlap_filter\n    }\n\n    #Resolve all-variants VCF after same-bp overlap filter\n    call ResolveComplexContig.ResolveComplexSv as ResolveCpxAll {\n      input:\n        vcf=BreakpointOverlap.out,\n        prefix=\"~{cohort_name}.~{contig}.all\",\n        contig=contig,\n        max_shard_size=max_shard_size,\n        cytobands=cytobands,\n        disc_files=disc_files,\n        mei_bed=mei_bed,\n        pe_exclude_list=pe_exclude_list,\n        rf_cutoff_files=rf_cutoff_files,\n        inv_only=false,\n        ref_dict=ref_dict,\n        precluster_distance=1000,\n        precluster_overlap_frac=0,\n        sv_pipeline_docker=sv_pipeline_docker,\n        sv_base_mini_docker=sv_base_mini_docker,\n        runtime_override_get_se_cutoff=runtime_override_get_se_cutoff,\n        runtime_override_shard_vcf_cpx=runtime_override_shard_vcf_cpx,\n        runtime_override_shard_vids=runtime_override_shard_vids,\n        runtime_override_resolve_prep=runtime_override_resolve_prep,\n        runtime_override_resolve_cpx_per_shard=runtime_override_resolve_cpx_per_shard,\n        runtime_override_restore_unresolved_cnv_per_shard=runtime_override_restore_unresolved_cnv_per_shard,\n        runtime_override_concat_resolved_per_shard=runtime_override_concat_resolved_per_shard,\n        runtime_override_merge_resolve_inner=runtime_override_merge_resolve_inner,\n    }\n\n    #Integrate inv-only and all-variants resolved VCFs\n    call IntegrateResolvedVcfs {\n      input:\n        inv_res_vcf=ResolveCpxInv.resolved_vcf_merged,\n        all_res_vcf=ResolveCpxAll.resolved_vcf_merged,\n        prefix=\"~{cohort_name}.~{contig}.resolved\",\n        sv_pipeline_docker=sv_pipeline_docker,\n        runtime_attr_override=runtime_override_integrate_resolved_vcfs\n    }\n\n    #Apply consistent variant naming scheme to integrated VCF\n    call RenameVariants {\n      input:\n        vcf=IntegrateResolvedVcfs.integrated_vcf,\n        prefix=\"~{cohort_name}.~{contig}.renamed\",\n        sv_pipeline_docker=sv_pipeline_docker,\n        runtime_attr_override=runtime_override_rename_variants\n    }\n\n    #Update SR background fail & bothside pass files\n    call MiniTasks.UpdateSrList as UpdateBothsidePass {\n      input:\n        vcf=RenameVariants.renamed_vcf,\n        original_list=cluster_bothside_pass_lists[i],\n        outfile=\"sr_bothside_pass.~{contig}.updated3.txt\",\n        sv_pipeline_docker=sv_pipeline_docker,\n        runtime_attr_override=runtime_override_update_sr_list_pass\n    }\n\n    #Update SR background fail & bothside pass files\n    call MiniTasks.UpdateSrList as UpdateBackgroundFail {\n      input:\n        vcf=RenameVariants.renamed_vcf,\n        original_list=cluster_background_fail_lists[i],\n        outfile=\"sr_background_fail.~{contig}.updated3.txt\",\n        sv_pipeline_docker=sv_pipeline_docker,\n        runtime_attr_override=runtime_override_update_sr_list_fail\n    }\n  }\n\n  #Merge resolved vcfs for QC\n  if (merge_vcfs) {\n    call MiniTasks.ConcatVcfs {\n      input:\n        vcfs=RenameVariants.renamed_vcf,\n        vcfs_idx=RenameVariants.renamed_vcf_index,\n        allow_overlaps=true,\n        outfile_prefix=\"~{cohort_name}.0506_complex\",\n        sv_base_mini_docker=sv_base_mini_docker,\n        runtime_attr_override=runtime_override_concat\n    }\n  }\n\n  #Final outputs\n  output {\n    Array[File] complex_resolve_vcfs = RenameVariants.renamed_vcf\n    Array[File] complex_resolve_vcf_indexes = RenameVariants.renamed_vcf_index\n    Array[File] complex_resolve_bothside_pass_lists = UpdateBothsidePass.updated_list\n    Array[File] complex_resolve_background_fail_lists = UpdateBackgroundFail.updated_list\n    File? merged_vcf = ConcatVcfs.concat_vcf\n    File? merged_vcf_index = ConcatVcfs.concat_vcf_idx\n  }\n}\n\n#Merge inversion-only and all-variant cpx-resolved outputs\ntask IntegrateResolvedVcfs {\n  input {\n    File inv_res_vcf\n    File all_res_vcf\n    String prefix\n    String sv_pipeline_docker\n    RuntimeAttr? runtime_attr_override\n  }\n\n  Float input_size = size([inv_res_vcf, all_res_vcf], \"GiB\")\n  RuntimeAttr runtime_default = object {\n                                  mem_gb: 2.0,\n                                  disk_gb: ceil(10 + input_size * 10),\n                                  cpu_cores: 1,\n                                  preemptible_tries: 1,\n                                  max_retries: 1,\n                                  boot_disk_gb: 10\n                                }\n  RuntimeAttr runtime_override = select_first([runtime_attr_override, runtime_default])\n  runtime {\n    memory: \"~{select_first([runtime_override.mem_gb, runtime_default.mem_gb])} GiB\"\n    disks: \"local-disk ~{select_first([runtime_override.disk_gb, runtime_default.disk_gb])} HDD\"\n    cpu: select_first([runtime_override.cpu_cores, runtime_default.cpu_cores])\n    preemptible: select_first([runtime_override.preemptible_tries, runtime_default.preemptible_tries])\n    maxRetries: select_first([runtime_override.max_retries, runtime_default.max_retries])\n    docker: sv_pipeline_docker\n    bootDiskSizeGb: select_first([runtime_override.boot_disk_gb, runtime_default.boot_disk_gb])\n  }\n\n  command <<<\n    set -euxo pipefail\n\n    ##make bed of the inversion resolved vcf##\n    zcat ~{inv_res_vcf} \\\n      |awk '{if ($8!~\"UNRESOLVED\" || $1~\"#\") print}' \\\n      |svtk vcf2bed stdin inv.resolve.bed --no-samples -i MEMBERS\n\n    ##make beds of the fully resolved vcf##\n    zcat ~{all_res_vcf} \\\n      |awk '{if ($8~\"UNRESOLVED\" || $1~\"#\") print}' \\\n      |svtk vcf2bed stdin all.unresolved.inv.bed --no-samples -i MEMBERS\n\n    zcat ~{all_res_vcf} \\\n      |awk '{if ($8!~\"UNRESOLVED\" || $1~\"#\") print}' \\\n      |svtk vcf2bed stdin all.resolved.inv.bed --no-samples -i MEMBERS\n\n    ##get unresolved variants from full vcf that are resolved in inversion resolved vcf###\n    zcat ~{inv_res_vcf} \\\n      | fgrep -v \"#\" \\\n      |awk '{if ($8!~\"UNRESOLVED\") print}' \\\n      |fgrep -wvf <(awk '{if ($NF!=\"MEMBERS\") print $NF}' all.resolved.inv.bed  \\\n      |tr ',' '\\n') \\\n      >add.vcf.lines.txt || true\n\n    ##get unresolved variants id from full vcf to strip since they are resolved in inversion resolved vcf###\n    ##inversions that cluster were other variants (rare) are kept as unresolved though they will also be part of a resolved variant in add.vcf.lines.txt##\n    awk '{if ($NF!=\"MEMBERS\") print $NF}' inv.resolve.bed \\\n      |tr ',' '\\n'\\\n      |fgrep -wf - all.unresolved.inv.bed \\\n      |awk '{if ($NF!~\",\")print $4}' \\\n      >remove.unresolved.vcf.ids.txt || true\n\n    mkdir temp\n    zcat ~{all_res_vcf} \\\n      |fgrep -wvf remove.unresolved.vcf.ids.txt \\\n      |cat - add.vcf.lines.txt \\\n      |bcftools sort - -O z -T temp \\\n      > ~{prefix}.vcf.gz\n\n    tabix ~{prefix}.vcf.gz\n  >>>\n\n  output {\n    File integrated_vcf = \"~{prefix}.vcf.gz\"\n    File integrated_vcf_idx = \"~{prefix}.vcf.gz.tbi\"\n  }\n}\n\n\ntask BreakpointOverlap {\n  input {\n    File vcf\n    File vcf_index\n    File bothside_pass_list\n    File background_fail_list\n    String prefix\n    String sv_pipeline_docker\n    RuntimeAttr? runtime_attr_override\n  }\n\n  Float input_size = size(vcf, \"GiB\")\n  Float base_mem_gb = 2.0\n  Float base_disk_gb = 5.0\n  RuntimeAttr runtime_default = object {\n                                  mem_gb: base_mem_gb,\n                                  disk_gb: ceil(base_disk_gb + input_size * 2.0),\n                                  cpu_cores: 1,\n                                  preemptible_tries: 3,\n                                  max_retries: 1,\n                                  boot_disk_gb: 10\n                                }\n  RuntimeAttr runtime_override = select_first([runtime_attr_override, runtime_default])\n  runtime {\n    memory: \"~{select_first([runtime_override.mem_gb, runtime_default.mem_gb])} GiB\"\n    disks: \"local-disk ~{select_first([runtime_override.disk_gb, runtime_default.disk_gb])} HDD\"\n    cpu: select_first([runtime_override.cpu_cores, runtime_default.cpu_cores])\n    preemptible: select_first([runtime_override.preemptible_tries, runtime_default.preemptible_tries])\n    maxRetries: select_first([runtime_override.max_retries, runtime_default.max_retries])\n    docker: sv_pipeline_docker\n    bootDiskSizeGb: select_first([runtime_override.boot_disk_gb, runtime_default.boot_disk_gb])\n  }\n\n  command <<<\n    set -euo pipefail\n    python /opt/sv-pipeline/04_variant_resolution/scripts/overlap_breakpoint_filter.py \\\n      ~{vcf} \\\n      ~{bothside_pass_list} \\\n      ~{background_fail_list} \\\n      | bgzip \\\n      > ~{prefix}.vcf.gz\n    tabix ~{prefix}.vcf.gz\n  >>>\n\n  output {\n    File out = \"~{prefix}.vcf.gz\"\n    File out_index = \"~{prefix}.vcf.gz.tbi\"\n  }\n}\n\n\n\n# Rename variants in VCF\ntask RenameVariants {\n  input {\n    File vcf\n    String prefix\n    String sv_pipeline_docker\n    RuntimeAttr? runtime_attr_override\n  }\n\n  Float input_size = size(vcf, \"GiB\")\n  Float base_mem_gb = 2.0\n  Float base_disk_gb = 5.0\n  RuntimeAttr runtime_default = object {\n                                  mem_gb: base_mem_gb,\n                                  disk_gb: ceil(base_disk_gb + input_size * 2.0),\n                                  cpu_cores: 1,\n                                  preemptible_tries: 3,\n                                  max_retries: 1,\n                                  boot_disk_gb: 10\n                                }\n  RuntimeAttr runtime_override = select_first([runtime_attr_override, runtime_default])\n  runtime {\n    memory: \"~{select_first([runtime_override.mem_gb, runtime_default.mem_gb])} GiB\"\n    disks: \"local-disk ~{select_first([runtime_override.disk_gb, runtime_default.disk_gb])} HDD\"\n    cpu: select_first([runtime_override.cpu_cores, runtime_default.cpu_cores])\n    preemptible: select_first([runtime_override.preemptible_tries, runtime_default.preemptible_tries])\n    maxRetries: select_first([runtime_override.max_retries, runtime_default.max_retries])\n    docker: sv_pipeline_docker\n    bootDiskSizeGb: select_first([runtime_override.boot_disk_gb, runtime_default.boot_disk_gb])\n  }\n\n  command <<<\n    set -euo pipefail\n    /opt/sv-pipeline/04_variant_resolution/scripts/rename.py --prefix ~{prefix} ~{vcf} - \\\n      | bgzip \\\n      > ~{prefix}.vcf.gz\n    tabix ~{prefix}.vcf.gz\n  >>>\n\n  output {\n    File renamed_vcf = \"~{prefix}.vcf.gz\"\n    File renamed_vcf_index = \"~{prefix}.vcf.gz.tbi\"\n  }\n}\n",
+    "root": "",
+    "options": "{\n  \"monitoring_script\": \"gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh\",\n  \"read_from_cache\": true,\n  \"workflow_failure_mode\": \"ContinueWhilePossible\",\n  \"write_to_cache\": true\n}",
+    "inputs": "{\"Module0506ComplexResolve.cluster_background_fail_lists\":[\"gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_background_fail.chr22.updated2.txt\"],\"Module0506ComplexResolve.cluster_bothside_pass_lists\":[\"gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_bothside_pass.chr22.updated2.txt\"],\"Module0506ComplexResolve.cluster_vcfs\":[\"gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz\"],\"Module0506ComplexResolve.cohort_name\":\"gnomad-sv-v3-TEST-SMALL\",\"Module0506ComplexResolve.contig_list\":\"gs://talkowski-sv-gnomad-resources/module0506_stress_test/contig_chr22_only.fai\",\"Module0506ComplexResolve.cytobands\":\"gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz\",\"Module0506ComplexResolve.disc_files\":[\"gs://talkowski-sv-gnomad-output/zero/Module00c/5438141e-b9d2-4af1-81bd-7713613cac0c/call-EvidenceMerging/EvidenceMerging/d2f16709-c563-4617-a395-e00c42745fb6/call-MergePEShards/attempt-3/gnomAD-SV_v3_mc10b1.PE.txt.gz\",\"gs://talkowski-sv-gnomad-output/zero/Module00c/metrics/gnomAD-SV_v3_mc10b10.PE.txt.gz\"],\"Module0506ComplexResolve.max_shard_size\":100,\"Module0506ComplexResolve.mei_bed\":\"gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/mei_hg38.bed.gz\",\"Module0506ComplexResolve.pe_exclude_list\":\"gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.bed.gz\",\"Module0506ComplexResolve.ref_dict\":\"gs://gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict\",\"Module0506ComplexResolve.rf_cutoff_files\":[\"gs://talkowski-sv-gnomad-output/zero/Module03/f38e5f6c-688f-4e40-b441-0bf7e3014dc6/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b1.cutoffs\",\"gs://talkowski-sv-gnomad-output/zero/Module03/93d8372d-ae19-401a-9bb8-a9f8d92be5e4/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b10.cutoffs\"],\"Module0506ComplexResolve.sv_base_mini_docker\":\"us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b\",\"Module0506ComplexResolve.sv_pipeline_docker\":\"us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643\"}",
+    "workflowUrl": "",
+    "labels": "{}"
+  },
+  "calls": {
+    "Module0506ComplexResolve.SubsetInversions": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/stdout",
+        "compressedDockerSize": 60797710,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "filtered_vcf_idx": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inversions_only.vcf.gz.tbi",
+          "filtered_vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inversions_only.vcf.gz"
+        },
+        "runtimeAttributes": {
+          "preemptible": "3",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 11 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "2 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: ad25dcce-2670-4ae0-af5a-ba93bfd9290f:Module0506ComplexResolve.SubsetInversions:0",
+          "hashes": {
+            "output count": "C81E728D9D4C2F636F067F89CC14862C",
+            "runtime attribute": {
+              "docker": "4D860022D0CABDB1B0FE4B6681DB92EA",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File filtered_vcf": "FDB52854014F110FA5200D87E5F7EC9A",
+              "File filtered_vcf_idx": "2FF349E6E654936A35E2937370C49255"
+            },
+            "input count": "1F0E3DAD99908345F7439F8FFABDFFC4",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "7AA7C0C70E7C911A6C58A493EA9EC8D1",
+            "input": {
+              "File vcf_index": "LEziWg==",
+              "File vcf": "nb4l4w==",
+              "String outfile_name": "04E98E549FA9BE22B8EF5A1855D453A3",
+              "Float runtime_default": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "6512BD43D9CAA6E02C990B0A82652DCA",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "String outfile_prefix": "C2A59C3BC43523C5021369B238368D94",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "6512BD43D9CAA6E02C990B0A82652DCA",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "String disk_type": "CF462255C9EE6F81352040BD2571D56C",
+              "String records_filter": "E0CBF6C0201482948F40D9FF9C9FC3EF",
+              "Float runtime_override": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "String sv_base_mini_docker": "61A4F5596B1F476A3CBE192D02451962"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 11,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "runtime_attr_override": null,
+          "outfile_name": "gnomad-sv-v3-TEST-SMALL.chr22.inversions_only.vcf.gz",
+          "disk_type": "HDD",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 11,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "use_ssd": null,
+          "outfile_prefix": "gnomad-sv-v3-TEST-SMALL.chr22.inversions_only",
+          "vcf_index": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz.tbi",
+          "sv_base_mini_docker": "us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b",
+          "records_filter": "INFO/SVTYPE=\"INV\"",
+          "vcf": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:18:59.500Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:18:57.757Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:18:58.521Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.206Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:18:46.206Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.184Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:18:46.206Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:49.837Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:18:57.757Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.206Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:18:49.837Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.184Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:18:46.184Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:58.521Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:18:59.500Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/SubsetInversions-0.log"
+        },
+        "start": "2021-08-09T18:18:46.184Z"
+      }
+    ],
+    "Module0506ComplexResolve.IntegrateResolvedVcfs": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/stdout",
+        "compressedDockerSize": 1575029224,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "integrated_vcf_idx": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.resolved.vcf.gz.tbi",
+          "integrated_vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.resolved.vcf.gz"
+        },
+        "runtimeAttributes": {
+          "preemptible": "1",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 12 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "2 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: b6df20af-4433-4fee-a310-2f879050af25:Module0506ComplexResolve.IntegrateResolvedVcfs:0",
+          "hashes": {
+            "output count": "C81E728D9D4C2F636F067F89CC14862C",
+            "runtime attribute": {
+              "docker": "7382D9C223584E22AD9DA68DB13BC0B4",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File integrated_vcf": "5790355B643FA8BD478D8B3BA3B2CEF7",
+              "File integrated_vcf_idx": "7F198DAFFB40A32CDC9BBFAFB07CA947"
+            },
+            "input count": "70EFDF2EC9B086079795C442636B55FB",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "C312B807875666699B2D8E5916DB4DB3",
+            "input": {
+              "Float runtime_default": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "C4CA4238A0B923820DCC509A6F75849B"
+              },
+              "Float input_size": "5959616C3AC39DE8965A7499BD822F1C",
+              "File inv_res_vcf": "N1Ok2A==",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "C4CA4238A0B923820DCC509A6F75849B"
+              },
+              "Float runtime_override": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "String sv_pipeline_docker": "692C0DAE2FF20633732DAC3F962B9EC9",
+              "File all_res_vcf": "1nzCdg==",
+              "String prefix": "1DAC61FA55261CC9E152E8F3ED6E0FE0"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 2,
+            "preemptible_tries": 1
+          },
+          "runtime_attr_override": null,
+          "prefix": "gnomad-sv-v3-TEST-SMALL.chr22.resolved",
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 2,
+            "preemptible_tries": 1
+          },
+          "input_size": 0.13224096689373255,
+          "inv_res_vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxInv/shard-0/ResolveComplexSv/be42579f-10d0-432c-b9f8-b55aff7cffe1/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inv_only.resolved.vcf.gz",
+          "all_res_vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxAll/shard-0/ResolveComplexSv/c22b63a3-be82-4ac9-894d-1c7cee9bb612/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.all.resolved.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:51:53.497Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:51:41.337Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:51:51.054Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:36.207Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:51:41.337Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:52.517Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:51:53.497Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:36.207Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:51:36.207Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:35.797Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:51:36.207Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:51.054Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:51:52.517Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:35.797Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:51:35.797Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/IntegrateResolvedVcfs-0.log"
+        },
+        "start": "2021-08-09T18:51:35.797Z"
+      }
+    ],
+    "Module0506ComplexResolve.RenameVariants": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/stdout",
+        "compressedDockerSize": 1575029224,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "renamed_vcf_index": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz.tbi",
+          "renamed_vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz"
+        },
+        "runtimeAttributes": {
+          "preemptible": "3",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 6 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "2 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: a13cbcdb-317a-46dc-b660-2eaddff462c1:Module0506ComplexResolve.RenameVariants:0",
+          "hashes": {
+            "output count": "C81E728D9D4C2F636F067F89CC14862C",
+            "runtime attribute": {
+              "docker": "7382D9C223584E22AD9DA68DB13BC0B4",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File renamed_vcf": "5790355B643FA8BD478D8B3BA3B2CEF7",
+              "File renamed_vcf_index": "7F198DAFFB40A32CDC9BBFAFB07CA947"
+            },
+            "input count": "6F4922F45568161A8CDF4AD2299F6D23",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "796B91DDC396591CC35B93F7C331A3BE",
+            "input": {
+              "File vcf": "dQ0ZAw==",
+              "Float runtime_default": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "1679091C5A880FAF6FB5E6087EB1B2DC",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float input_size": "BFBBC03484CFA9B3C0C36D58DE12E85D",
+              "Float base_mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "1679091C5A880FAF6FB5E6087EB1B2DC",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float runtime_override": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "String sv_pipeline_docker": "692C0DAE2FF20633732DAC3F962B9EC9",
+              "String prefix": "4DD871A3BE9798560F58E47CFE835E13",
+              "Float base_disk_gb": "336669DBE720233ED5577DDF81B653D3"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 6,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "runtime_attr_override": null,
+          "base_mem_gb": 2,
+          "prefix": "gnomad-sv-v3-TEST-SMALL.chr22.renamed",
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 6,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "input_size": 0.1315549360588193,
+          "base_disk_gb": 5,
+          "vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-IntegrateResolvedVcfs/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.resolved.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:52:08.497Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:51:57.068Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:52:05.814Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:07.517Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:52:08.497Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:55.176Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:51:55.176Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:55.176Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:51:55.196Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:55.196Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:51:57.068Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:05.814Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:52:07.517Z"
+          },
+          {
+            "startTime": "2021-08-09T18:51:55.196Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:51:55.196Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/RenameVariants-0.log"
+        },
+        "start": "2021-08-09T18:51:55.176Z"
+      }
+    ],
+    "Module0506ComplexResolve.UpdateBothsidePass": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/stdout",
+        "compressedDockerSize": 1575029224,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "updated_list": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/cacheCopy/sr_bothside_pass.chr22.updated3.txt"
+        },
+        "runtimeAttributes": {
+          "preemptible": "3",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 12 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "3.75 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: a13cbcdb-317a-46dc-b660-2eaddff462c1:Module0506ComplexResolve.UpdateBothsidePass:0",
+          "hashes": {
+            "output count": "C4CA4238A0B923820DCC509A6F75849B",
+            "runtime attribute": {
+              "docker": "7382D9C223584E22AD9DA68DB13BC0B4",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File updated_list": "6279B3FA3F1B595198942087AA490C39"
+            },
+            "input count": "98F13708210194C475687BE6106A3B84",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "94B50ABE51B575158C500E80951677C2",
+            "input": {
+              "Float compression_factor": "336669DBE720233ED5577DDF81B653D3",
+              "File vcf": "r5/H3w==",
+              "Float runtime_default": {
+                "mem_gb": "7A3FFBB62732BD87727BC88EF0653E6B"
+              },
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float input_size": "17797D327909E3ED29333C0970550EAD",
+              "File original_list": "5nLQ9g==",
+              "Float base_mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float runtime_override": {
+                "mem_gb": "7A3FFBB62732BD87727BC88EF0653E6B"
+              },
+              "String sv_pipeline_docker": "692C0DAE2FF20633732DAC3F962B9EC9",
+              "String outfile": "7E7BD8AFBD365733FC7F9A7B5D9A96AF",
+              "Float base_disk_gb": "43A1437F7F656CD8BE7C996C58719E0A"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "outfile": "sr_bothside_pass.chr22.updated3.txt",
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 3.75,
+            "preemptible_tries": 3
+          },
+          "runtime_attr_override": null,
+          "base_mem_gb": 2,
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 3.75,
+            "preemptible_tries": 3
+          },
+          "compression_factor": 5,
+          "input_size": 0.13267987221479416,
+          "original_list": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_bothside_pass.chr22.updated2.txt",
+          "base_disk_gb": 10,
+          "vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:52:29.499Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:52:10.477Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:52:10.477Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:20.943Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:52:26.027Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:28.520Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:52:29.499Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:11.197Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:52:11.197Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:10.477Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:52:11.197Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:26.027Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:52:28.520Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:11.197Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:52:20.943Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/UpdateBothsidePass-0.log"
+        },
+        "start": "2021-08-09T18:52:10.477Z"
+      }
+    ],
+    "Module0506ComplexResolve.UpdateBackgroundFail": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/stdout",
+        "compressedDockerSize": 1575029224,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "updated_list": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/cacheCopy/sr_background_fail.chr22.updated3.txt"
+        },
+        "runtimeAttributes": {
+          "preemptible": "3",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 12 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "3.75 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: a13cbcdb-317a-46dc-b660-2eaddff462c1:Module0506ComplexResolve.UpdateBackgroundFail:0",
+          "hashes": {
+            "output count": "C4CA4238A0B923820DCC509A6F75849B",
+            "runtime attribute": {
+              "docker": "7382D9C223584E22AD9DA68DB13BC0B4",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File updated_list": "6279B3FA3F1B595198942087AA490C39"
+            },
+            "input count": "98F13708210194C475687BE6106A3B84",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "94B50ABE51B575158C500E80951677C2",
+            "input": {
+              "Float compression_factor": "336669DBE720233ED5577DDF81B653D3",
+              "File vcf": "r5/H3w==",
+              "Float runtime_default": {
+                "mem_gb": "7A3FFBB62732BD87727BC88EF0653E6B"
+              },
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float input_size": "087270F7DBF2F723D7242BF04927AA73",
+              "File original_list": "np20pA==",
+              "Float base_mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "C20AD4D76FE97759AA27A0C99BFF6710",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float runtime_override": {
+                "mem_gb": "7A3FFBB62732BD87727BC88EF0653E6B"
+              },
+              "String sv_pipeline_docker": "692C0DAE2FF20633732DAC3F962B9EC9",
+              "String outfile": "4D3CAE927C5CF35E7FB1790CA43614BD",
+              "Float base_disk_gb": "43A1437F7F656CD8BE7C996C58719E0A"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "outfile": "sr_background_fail.chr22.updated3.txt",
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 3.75,
+            "preemptible_tries": 3
+          },
+          "runtime_attr_override": null,
+          "base_mem_gb": 2,
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 12,
+            "mem_gb": 3.75,
+            "preemptible_tries": 3
+          },
+          "compression_factor": 5,
+          "input_size": 0.14188475720584393,
+          "original_list": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_background_fail.chr22.updated2.txt",
+          "base_disk_gb": 10,
+          "vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:52:29.499Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:52:28.520Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:52:29.499Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:15.730Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:52:25.792Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:10.477Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:52:10.477Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:25.792Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:52:28.520Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:11.197Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:52:15.730Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:11.197Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:52:11.197Z"
+          },
+          {
+            "startTime": "2021-08-09T18:52:10.477Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:52:11.197Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/UpdateBackgroundFail-0.log"
+        },
+        "start": "2021-08-09T18:52:10.477Z"
+      }
+    ],
+    "Module0506ComplexResolve.ResolveCpxAll": [
+      {
+        "executionStatus": "Done",
+        "shardIndex": 0,
+        "outputs": {
+          "resolved_vcf_merged_idx": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxAll/shard-0/ResolveComplexSv/c22b63a3-be82-4ac9-894d-1c7cee9bb612/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.all.resolved.vcf.gz.tbi",
+          "resolved_vcf_merged": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxAll/shard-0/ResolveComplexSv/c22b63a3-be82-4ac9-894d-1c7cee9bb612/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.all.resolved.vcf.gz"
+        },
+        "inputs": {
+          "pe_exclude_list": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.bed.gz",
+          "runtime_override_merge_resolve_inner": null,
+          "ref_dict": "gs://gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict",
+          "max_shard_size": 100,
+          "runtime_override_get_se_cutoff": null,
+          "runtime_override_shard_vcf_cpx": null,
+          "prefix": "gnomad-sv-v3-TEST-SMALL.chr22.all",
+          "mei_bed": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/mei_hg38.bed.gz",
+          "disc_files": [
+            "gs://talkowski-sv-gnomad-output/zero/Module00c/5438141e-b9d2-4af1-81bd-7713613cac0c/call-EvidenceMerging/EvidenceMerging/d2f16709-c563-4617-a395-e00c42745fb6/call-MergePEShards/attempt-3/gnomAD-SV_v3_mc10b1.PE.txt.gz",
+            "gs://talkowski-sv-gnomad-output/zero/Module00c/metrics/gnomAD-SV_v3_mc10b10.PE.txt.gz"
+          ],
+          "runtime_override_concat_resolved_per_shard": null,
+          "cytobands": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz",
+          "runtime_override_restore_unresolved_cnv_per_shard": null,
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "ConcatResolvedPerShard.generate_index": true,
+          "runtime_override_resolve_cpx_per_shard": null,
+          "runtime_override_resolve_prep": null,
+          "inv_only": false,
+          "sv_base_mini_docker": "us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b",
+          "contig": "chr22",
+          "runtime_override_shard_vids": null,
+          "rf_cutoff_files": [
+            "gs://talkowski-sv-gnomad-output/zero/Module03/f38e5f6c-688f-4e40-b441-0bf7e3014dc6/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b1.cutoffs",
+            "gs://talkowski-sv-gnomad-output/zero/Module03/93d8372d-ae19-401a-9bb8-a9f8d92be5e4/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b10.cutoffs"
+          ],
+          "precluster_overlap_frac": 0,
+          "ConcatResolvedPerShard.naive": false,
+          "precluster_distance": 1000,
+          "vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.breakpoint_overlap.vcf.gz"
+        },
+        "end": "2021-08-09T18:51:34.642Z",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:19:04.537Z",
+            "description": "SubWorkflowPreparingState",
+            "endTime": "2021-08-09T18:19:04.538Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:04.537Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:19:04.537Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:04.537Z",
+            "description": "SubWorkflowPendingState",
+            "endTime": "2021-08-09T18:19:04.537Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:04.538Z",
+            "description": "SubWorkflowRunningState",
+            "endTime": "2021-08-09T18:51:34.642Z"
+          }
+        ],
+        "start": "2021-08-09T18:19:04.537Z",
+        "subWorkflowId": "c22b63a3-be82-4ac9-894d-1c7cee9bb612"
+      }
+    ],
+    "Module0506ComplexResolve.ResolveCpxInv": [
+      {
+        "executionStatus": "Done",
+        "shardIndex": 0,
+        "outputs": {
+          "resolved_vcf_merged": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxInv/shard-0/ResolveComplexSv/be42579f-10d0-432c-b9f8-b55aff7cffe1/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inv_only.resolved.vcf.gz",
+          "resolved_vcf_merged_idx": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-ResolveCpxInv/shard-0/ResolveComplexSv/be42579f-10d0-432c-b9f8-b55aff7cffe1/call-ConcatResolvedPerShard/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inv_only.resolved.vcf.gz.tbi"
+        },
+        "inputs": {
+          "pe_exclude_list": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.bed.gz",
+          "runtime_override_merge_resolve_inner": null,
+          "ref_dict": "gs://gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict",
+          "max_shard_size": 100,
+          "runtime_override_get_se_cutoff": null,
+          "runtime_override_shard_vcf_cpx": null,
+          "prefix": "gnomad-sv-v3-TEST-SMALL.chr22.inv_only",
+          "mei_bed": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/mei_hg38.bed.gz",
+          "disc_files": [
+            "gs://talkowski-sv-gnomad-output/zero/Module00c/5438141e-b9d2-4af1-81bd-7713613cac0c/call-EvidenceMerging/EvidenceMerging/d2f16709-c563-4617-a395-e00c42745fb6/call-MergePEShards/attempt-3/gnomAD-SV_v3_mc10b1.PE.txt.gz",
+            "gs://talkowski-sv-gnomad-output/zero/Module00c/metrics/gnomAD-SV_v3_mc10b10.PE.txt.gz"
+          ],
+          "runtime_override_concat_resolved_per_shard": null,
+          "cytobands": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz",
+          "runtime_override_restore_unresolved_cnv_per_shard": null,
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "ConcatResolvedPerShard.generate_index": true,
+          "runtime_override_resolve_cpx_per_shard": null,
+          "runtime_override_resolve_prep": null,
+          "inv_only": true,
+          "sv_base_mini_docker": "us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b",
+          "contig": "chr22",
+          "runtime_override_shard_vids": null,
+          "rf_cutoff_files": [
+            "gs://talkowski-sv-gnomad-output/zero/Module03/f38e5f6c-688f-4e40-b441-0bf7e3014dc6/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b1.cutoffs",
+            "gs://talkowski-sv-gnomad-output/zero/Module03/93d8372d-ae19-401a-9bb8-a9f8d92be5e4/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b10.cutoffs"
+          ],
+          "precluster_overlap_frac": 0.1,
+          "ConcatResolvedPerShard.naive": false,
+          "precluster_distance": 50000000,
+          "vcf": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-SubsetInversions/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.inversions_only.vcf.gz"
+        },
+        "end": "2021-08-09T18:22:08.207Z",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:19:01.482Z",
+            "description": "SubWorkflowRunningState",
+            "endTime": "2021-08-09T18:22:08.207Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:01.477Z",
+            "description": "SubWorkflowPendingState",
+            "endTime": "2021-08-09T18:19:01.477Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:01.477Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:19:01.477Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:01.477Z",
+            "description": "SubWorkflowPreparingState",
+            "endTime": "2021-08-09T18:19:01.482Z"
+          }
+        ],
+        "start": "2021-08-09T18:19:01.477Z",
+        "subWorkflowId": "be42579f-10d0-432c-b9f8-b55aff7cffe1"
+      }
+    ],
+    "Module0506ComplexResolve.BreakpointOverlap": [
+      {
+        "executionStatus": "Done",
+        "stdout": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/stdout",
+        "compressedDockerSize": 1575029224,
+        "shardIndex": 0,
+        "jes": {
+          "monitoringScript": "gs://gatk-sv-resources/resources/cromwell_monitoring_script2.sh"
+        },
+        "outputs": {
+          "out_index": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.breakpoint_overlap.vcf.gz.tbi",
+          "out": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.breakpoint_overlap.vcf.gz"
+        },
+        "runtimeAttributes": {
+          "preemptible": "3",
+          "failOnStderr": "false",
+          "bootDiskSizeGb": "10",
+          "disks": "local-disk 6 HDD",
+          "continueOnReturnCode": "0",
+          "docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "maxRetries": "1",
+          "cpu": "1",
+          "cpuMin": "1",
+          "noAddress": "false",
+          "zones": "us-central1-a,us-central1-b,us-east1-d,us-central1-c,us-central1-f,us-east1-c",
+          "memoryMin": "2 GB",
+          "memory": "2 GB"
+        },
+        "callCaching": {
+          "allowResultReuse": true,
+          "hit": true,
+          "result": "Cache Hit: b6df20af-4433-4fee-a310-2f879050af25:Module0506ComplexResolve.BreakpointOverlap:0",
+          "hashes": {
+            "output count": "C81E728D9D4C2F636F067F89CC14862C",
+            "runtime attribute": {
+              "docker": "7382D9C223584E22AD9DA68DB13BC0B4",
+              "continueOnReturnCode": "CFCD208495D565EF66E7DFF9F98764DA",
+              "failOnStderr": "68934A3E9455FA72420237EB05902327"
+            },
+            "output expression": {
+              "File out_index": "7F198DAFFB40A32CDC9BBFAFB07CA947",
+              "File out": "5790355B643FA8BD478D8B3BA3B2CEF7"
+            },
+            "input count": "3C59DC048E8850243BE8079A5C74D079",
+            "backend name": "85D6F63859525E464173387636E20324",
+            "command template": "4EE0C6721A51BE4ADFF6A42F5DE793BD",
+            "input": {
+              "File vcf_index": "LEziWg==",
+              "File vcf": "nb4l4w==",
+              "Float runtime_default": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "File background_fail_list": "np20pA==",
+              "Int runtime_override": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "1679091C5A880FAF6FB5E6087EB1B2DC",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float input_size": "A5C2CDC1B3773086AED338C60C005030",
+              "Float base_mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4",
+              "Int runtime_default": {
+                "cpu_cores": "C4CA4238A0B923820DCC509A6F75849B",
+                "max_retries": "C4CA4238A0B923820DCC509A6F75849B",
+                "boot_disk_gb": "D3D9446802A44259755D38E6D163E820",
+                "disk_gb": "1679091C5A880FAF6FB5E6087EB1B2DC",
+                "preemptible_tries": "ECCBC87E4B5CE2FE28308FD9F2A7BAF3"
+              },
+              "Float runtime_override": {
+                "mem_gb": "D1BD83A33F1A841AB7FDA32449746CC4"
+              },
+              "String sv_pipeline_docker": "692C0DAE2FF20633732DAC3F962B9EC9",
+              "File bothside_pass_list": "5nLQ9g==",
+              "String prefix": "30A4AB36C96979A3B189F50C32F44764",
+              "Float base_disk_gb": "336669DBE720233ED5577DDF81B653D3"
+            }
+          },
+          "effectiveCallCachingMode": "ReadAndWriteCache"
+        },
+        "inputs": {
+          "runtime_default": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 6,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "runtime_attr_override": null,
+          "base_mem_gb": 2,
+          "bothside_pass_list": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_bothside_pass.chr22.updated2.txt",
+          "prefix": "gnomad-sv-v3-TEST-SMALL.chr22.breakpoint_overlap",
+          "background_fail_list": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_background_fail.chr22.updated2.txt",
+          "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+          "runtime_override": {
+            "cpu_cores": 1,
+            "max_retries": 1,
+            "boot_disk_gb": 10,
+            "disk_gb": 6,
+            "mem_gb": 2,
+            "preemptible_tries": 3
+          },
+          "vcf_index": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz.tbi",
+          "input_size": 0.15659298468381166,
+          "base_disk_gb": 5,
+          "vcf": "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz"
+        },
+        "returnCode": 0,
+        "monitoringLog": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/monitoring.log",
+        "backend": "PAPIv2",
+        "end": "2021-08-09T18:19:02.498Z",
+        "stderr": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/stderr",
+        "callRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0",
+        "attempt": 1,
+        "executionEvents": [
+          {
+            "startTime": "2021-08-09T18:18:46.207Z",
+            "description": "PreparingJob",
+            "endTime": "2021-08-09T18:18:50.360Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.184Z",
+            "description": "RequestingExecutionToken",
+            "endTime": "2021-08-09T18:18:46.206Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.206Z",
+            "description": "WaitingForValueStore",
+            "endTime": "2021-08-09T18:18:46.207Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:46.184Z",
+            "description": "Pending",
+            "endTime": "2021-08-09T18:18:46.184Z"
+          },
+          {
+            "startTime": "2021-08-09T18:18:50.360Z",
+            "description": "CallCacheReading",
+            "endTime": "2021-08-09T18:19:00.286Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:01.519Z",
+            "description": "UpdatingJobStore",
+            "endTime": "2021-08-09T18:19:02.498Z"
+          },
+          {
+            "startTime": "2021-08-09T18:19:00.286Z",
+            "description": "UpdatingCallCache",
+            "endTime": "2021-08-09T18:19:01.519Z"
+          }
+        ],
+        "backendLogs": {
+          "log": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-BreakpointOverlap/shard-0/BreakpointOverlap-0.log"
+        },
+        "start": "2021-08-09T18:18:46.184Z"
+      }
+    ]
+  },
+  "outputs": {
+    "Module0506ComplexResolve.merged_vcf_index": null,
+    "Module0506ComplexResolve.merged_vcf": null,
+    "Module0506ComplexResolve.complex_resolve_vcfs": [
+      "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz"
+    ],
+    "Module0506ComplexResolve.complex_resolve_vcf_indexes": [
+      "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-RenameVariants/shard-0/cacheCopy/gnomad-sv-v3-TEST-SMALL.chr22.renamed.vcf.gz.tbi"
+    ],
+    "Module0506ComplexResolve.complex_resolve_background_fail_lists": [
+      "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBackgroundFail/shard-0/cacheCopy/sr_background_fail.chr22.updated3.txt"
+    ],
+    "Module0506ComplexResolve.complex_resolve_bothside_pass_lists": [
+      "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/call-UpdateBothsidePass/shard-0/cacheCopy/sr_bothside_pass.chr22.updated3.txt"
+    ]
+  },
+  "workflowRoot": "gs://talkowski-sv-gnomad-cromwell-execution/Module0506ComplexResolve/bd2a6939-6861-4faa-afbb-b682adeda4b5/",
+  "actualWorkflowLanguage": "WDL",
+  "id": "bd2a6939-6861-4faa-afbb-b682adeda4b5",
+  "inputs": {
+    "pe_exclude_list": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.bed.gz",
+    "runtime_override_shard_vcf_cpx_inv": null,
+    "runtime_override_shard_vids_inv": null,
+    "runtime_override_merge_resolve_inner": null,
+    "ref_dict": "gs://gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict",
+    "max_shard_size": 100,
+    "runtime_override_get_se_cutoff": null,
+    "Module0506ComplexResolve.ConcatVcfs.generate_index": true,
+    "runtime_override_update_sr_list_fail": null,
+    "runtime_override_shard_vcf_cpx": null,
+    "runtime_override_breakpoint_overlap_filter": null,
+    "cluster_bothside_pass_lists": [
+      "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_bothside_pass.chr22.updated2.txt"
+    ],
+    "mei_bed": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/mei_hg38.bed.gz",
+    "Module0506ComplexResolve.ConcatVcfs.naive": false,
+    "runtime_override_integrate_resolved_vcfs": null,
+    "contig_list": "gs://talkowski-sv-gnomad-resources/module0506_stress_test/contig_chr22_only.fai",
+    "disc_files": [
+      "gs://talkowski-sv-gnomad-output/zero/Module00c/5438141e-b9d2-4af1-81bd-7713613cac0c/call-EvidenceMerging/EvidenceMerging/d2f16709-c563-4617-a395-e00c42745fb6/call-MergePEShards/attempt-3/gnomAD-SV_v3_mc10b1.PE.txt.gz",
+      "gs://talkowski-sv-gnomad-output/zero/Module00c/metrics/gnomAD-SV_v3_mc10b10.PE.txt.gz"
+    ],
+    "runtime_override_concat_resolved_per_shard": null,
+    "runtime_override_resolve_prep_inv": null,
+    "cytobands": "gs://gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz",
+    "runtime_override_restore_unresolved_cnv_per_shard": null,
+    "sv_pipeline_docker": "us.gcr.io/broad-dsde-methods/markw/sv-pipeline:mw-gnomad-0506-239e643",
+    "cluster_vcfs": [
+      "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/all_batches.pesr_depth.chr22.vcf.gz"
+    ],
+    "runtime_override_merge_resolve_inner_inv": null,
+    "cohort_name": "gnomad-sv-v3-TEST-SMALL",
+    "runtime_override_subset_inversions": null,
+    "runtime_override_resolve_cpx_per_shard": null,
+    "runtime_override_concat_resolved_per_shard_inv": null,
+    "runtime_override_resolve_prep": null,
+    "cluster_background_fail_lists": [
+      "gs://broad-dsde-methods-markw/gnomad-v3/tests/module0506cluster/v2/sr_background_fail.chr22.updated2.txt"
+    ],
+    "runtime_override_restore_unresolved_cnv_per_shard_inv": null,
+    "runtime_override_resolve_cpx_per_shard_inv": null,
+    "Module0506ComplexResolve.SubsetInversions.use_ssd": null,
+    "sv_base_mini_docker": "us.gcr.io/broad-dsde-methods/markw/sv-base-mini:mw-gnomad-0506-df6eb9b",
+    "merge_vcfs": false,
+    "runtime_override_get_se_cutoff_inv": null,
+    "runtime_override_concat": null,
+    "runtime_override_shard_vids": null,
+    "rf_cutoff_files": [
+      "gs://talkowski-sv-gnomad-output/zero/Module03/f38e5f6c-688f-4e40-b441-0bf7e3014dc6/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b1.cutoffs",
+      "gs://talkowski-sv-gnomad-output/zero/Module03/93d8372d-ae19-401a-9bb8-a9f8d92be5e4/call-AdjudicateSV/cacheCopy/gnomAD-SV_v3_mc10b10.cutoffs"
+    ],
+    "runtime_override_update_sr_list_pass": null,
+    "runtime_override_rename_variants": null
+  },
+  "labels": {
+    "cromwell-workflow-id": "cromwell-bd2a6939-6861-4faa-afbb-b682adeda4b5"
+  },
+  "submission": "2021-08-09T18:18:38.025Z",
+  "status": "Succeeded",
+  "end": "2021-08-09T18:52:31.906Z",
+  "start": "2021-08-09T18:18:39.542Z"
+}
